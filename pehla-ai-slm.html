@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pehla AI (real model)</title>
+<style>
+:root{--bg:#f3f5f9;--panel:#fff;--ink:#16202e;--mute:#68758a;--me:#2b4acb;--meink:#fff;--line:#dde3ee;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10151f;--panel:#1a2230;--ink:#e8edf6;--mute:#8d9ab0;--me:#4f6ff0;--line:#2a3447}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;max-width:640px;margin:0 auto}
+header{display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 10px}
+h1{font-size:20px;margin:0;font-weight:700;letter-spacing:-.01em}
+header small{color:var(--mute);font-size:13px}
+#clear{background:none;border:0;color:var(--mute);font:inherit;font-size:13px;padding:6px 0 6px 10px;cursor:pointer}
+#boot{margin:8px 16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+#boot p{margin:0 0 12px;color:var(--mute);font-size:14px}
+#go{font:inherit;font-weight:600;padding:11px 18px;border:0;border-radius:12px;background:var(--me);color:var(--meink);cursor:pointer}
+#bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:12px;display:none}
+#fill{height:100%;width:0;background:var(--me);transition:width .2s}
+#st{margin-top:8px;font-size:13px;color:var(--mute)}
+#log{flex:1;overflow-y:auto;padding:6px 16px 12px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:85%;padding:9px 13px;border-radius:16px;background:var(--panel);border:1px solid var(--line);white-space:pre-wrap;word-wrap:break-word}
+.m.me{align-self:flex-end;background:var(--me);color:var(--meink);border-color:var(--me);border-bottom-right-radius:4px}
+.m.ai{align-self:flex-start;border-bottom-left-radius:4px}
+form{display:flex;gap:8px;padding:10px 16px 14px}
+input{flex:1;min-width:0;font:inherit;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+input:disabled{opacity:.5}
+input:focus-visible,button:focus-visible{outline:2px solid var(--me);outline-offset:2px}
+#send{font:inherit;font-weight:600;padding:0 18px;border:0;border-radius:12px;background:var(--me);color:var(--meink);cursor:pointer}
+#send:disabled{opacity:.5}
+</style>
+</head>
+<body>
+<header><div><h1>Pehla AI</h1><small>Small language model, runs on your phone.</small></div><button id="clear" type="button">Reset chat</button></header>
+
+<div id="boot">
+  <p>First time: downloads the model (about 100 MB). Use Wi-Fi. After this it is saved on your phone and works offline.</p>
+  <button id="go" type="button">Download and start</button>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="st"></div>
+</div>
+
+<div id="log" aria-live="polite"></div>
+<form id="f"><input id="t" autocomplete="off" placeholder="Download the model first" aria-label="Message" disabled><button id="send" disabled>Send</button></form>
+
+<script type="module">
+import { pipeline, TextStreamer } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm";
+
+const MODEL = "onnx-community/SmolLM2-135M-Instruct";
+const SYSTEM = "You are Pehla AI, a small, friendly assistant. Answer in one to three short sentences. If you are not sure, say so.";
+const $ = id => document.getElementById(id);
+const log = $("log"), inp = $("t"), send = $("send");
+let gen = null, busy = false, hist = [];
+
+try { hist = JSON.parse(localStorage.getItem("pehla2_hist") || "[]"); } catch (e) {}
+const saveHist = () => { try { localStorage.setItem("pehla2_hist", JSON.stringify(hist.slice(-40))); } catch (e) {} };
+
+function bubble(role, text) {
+  const d = document.createElement("div");
+  d.className = "m " + role; d.textContent = text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
+}
+hist.forEach(h => bubble(h.role === "user" ? "me" : "ai", h.content));
+if (!hist.length) bubble("ai", "Hi, I'm Pehla AI. Download the model above, then ask me anything simple.");
+
+// ---- load model (cached by the browser after first download) ----
+const files = {};
+function onProgress(p) {
+  if (p.status === "progress" && p.file) {
+    files[p.file] = { l: p.loaded || 0, t: p.total || 0 };
+    let l = 0, t = 0; for (const k in files) { l += files[k].l; t += files[k].t; }
+    const pct = t ? Math.round(l / t * 100) : 0;
+    $("fill").style.width = pct + "%";
+    $("st").textContent = "Downloading " + (l / 1048576).toFixed(0) + " of " + (t / 1048576).toFixed(0) + " MB";
+  } else if (p.status === "ready") { $("st").textContent = "Starting model..."; }
+}
+async function start() {
+  $("go").disabled = true; $("bar").style.display = "block"; $("st").textContent = "Connecting...";
+  try {
+    gen = await pipeline("text-generation", MODEL, { dtype: "q4", device: "wasm", progress_callback: onProgress });
+    $("boot").style.display = "none";
+    inp.disabled = false; send.disabled = false; inp.placeholder = "Ask something"; inp.focus();
+  } catch (e) {
+    $("go").disabled = false;
+    $("st").textContent = "Could not load: " + (e.message || e) + ". Check internet and try again.";
+  }
+}
+$("go").addEventListener("click", start);
+
+// ---- chat ----
+$("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = inp.value.trim(); if (!q || !gen || busy) return;
+  inp.value = ""; busy = true; send.disabled = true;
+  bubble("me", q); hist.push({ role: "user", content: q });
+  const out = bubble("ai", "...");
+  let text = "";
+  try {
+    const messages = [{ role: "system", content: SYSTEM }].concat(hist.slice(-6));
+    const streamer = new TextStreamer(gen.tokenizer, {
+      skip_prompt: true, skip_special_tokens: true,
+      callback_function: t => { text += t; out.textContent = text; log.scrollTop = log.scrollHeight; }
+    });
+    await gen(messages, { max_new_tokens: 120, do_sample: true, temperature: 0.4, top_p: 0.9, repetition_penalty: 1.15, streamer });
+    text = text.trim() || "(no answer)"; out.textContent = text;
+    hist.push({ role: "assistant", content: text }); saveHist();
+  } catch (err) { out.textContent = "Error: " + (err.message || err); }
+  busy = false; send.disabled = false; inp.focus();
+});
+
+$("clear").addEventListener("click", () => {
+  if (!confirm("Erase this chat?")) return;
+  hist = []; saveHist(); log.innerHTML = ""; bubble("ai", "Chat cleared.");
+});
+</script>
+</body>
+</html>
